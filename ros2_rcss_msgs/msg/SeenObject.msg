@@ -1,0 +1,5 @@
+string object_type
+float32 distance
+float32 direction
+float32 distance_change
+float32 direction_change

@@ -1,0 +1,9 @@
+repositories:
+  rcsoccersim/rcssmonitor:
+    type: git
+    url: https://github.com/rcsoccersim/rcssmonitor
+    version: master
+  rcsoccersim/rcssserver:
+    type: git
+    url: https://github.com/rcsoccersim/rcssserver
+    version: master
