@@ -26,7 +26,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'rcss_client = ros2_rcss.rcss_client_node:main',
+            'rcss_client = ros2_rcss.rcss_client:main',
         ],
     },
 )

@@ -23,62 +23,60 @@ class Parser:
         }
 
         cycle_match = re.match(r"\(see\s+(\d+)", msg)
-
         if cycle_match:
             result["cycle"] = int(cycle_match.group(1))
 
-        ball_pattern = re.compile(
-            r"\(\(b\)\s+"
-            r"([-\d\.]+)\s+"
-            r"([-\d\.]+)\s+"
-            r"([-\d\.]+)\s+"
-            r"([-\d\.]+)"
-            r"\)"
-        )
+        obj_pattern = re.compile(r'\((\([^)]+\))\s+([^)]*)\)')
 
-        for match in ball_pattern.finditer(msg):
+        for match in obj_pattern.finditer(msg):
+            obj_name_raw = match.group(1).strip()
+            fields_raw   = match.group(2).strip()
 
-            result["objects"].append({
+            nums = []
+            for token in fields_raw.split():
+                try:
+                    nums.append(float(token))
+                except ValueError:
+                    pass
 
-                "object_type": "ball",
+            if obj_name_raw == "(b)":
+                obj = {"object_type": "ball"}
+                keys = ["distance", "direction", "distance_change", "direction_change"]
+                for k, v in zip(keys, nums):
+                    obj[k] = v
+                result["objects"].append(obj)
 
-                "distance": float(match.group(1)),
-                "direction": float(match.group(2)),
+            elif obj_name_raw.startswith("(p"):
+                # Parse team name, uniform number, goalie flag from the name token
+                team_match = re.match(
+                    r'\(p(?:\s+"([^"]+)"(?:\s+(\d+)(?:\s+(goalie))?)?)?\)',
+                    obj_name_raw
+                )
+                player = {
+                    "object_type": "player",
+                    "team_name":       team_match.group(1) if team_match else None,
+                    "uniform_number":  int(team_match.group(2)) if (team_match and team_match.group(2)) else None,
+                    "goalie":          team_match.group(3) == "goalie" if team_match else False,
+                }
+                keys = ["distance", "direction", "distance_change",
+                        "direction_change", "body_direction", "head_direction"]
+                for k, v in zip(keys, nums):
+                    player[k] = v
+                result["players"].append(player)
 
-                "distance_change": float(match.group(3)),
-                "direction_change": float(match.group(4))
-            })
+            elif obj_name_raw.startswith("(g"):
+                obj = {"object_type": "goal", "which": obj_name_raw}
+                keys = ["distance", "direction", "distance_change", "direction_change"]
+                for k, v in zip(keys, nums):
+                    obj[k] = v
+                result["objects"].append(obj)
 
-        player_pattern = re.compile(
-            r'\(\(p\s+"([^"]+)"\s+(\d+)\)\s+'
-            r'([-\d\.]+)\s+'
-            r'([-\d\.]+)\s+'
-            r'([-\d\.]+)\s+'
-            r'([-\d\.]+)\s+'
-            r'([-\d\.]+)\s+'
-            r'([-\d\.]+)'
-            r'\)'
-        )
-
-        for match in player_pattern.finditer(msg):
-
-            result["players"].append({
-
-                "team_name": match.group(1),
-
-                "uniform_number": int(match.group(2)),
-
-                "goalie": False,
-
-                "distance": float(match.group(3)),
-                "direction": float(match.group(4)),
-
-                "distance_change": float(match.group(5)),
-                "direction_change": float(match.group(6)),
-
-                "body_direction": float(match.group(7)),
-                "head_direction": float(match.group(8))
-            })
+            elif obj_name_raw.startswith("(f") or obj_name_raw.startswith("(l"):
+                obj = {"object_type": "flag", "which": obj_name_raw}
+                keys = ["distance", "direction", "distance_change", "direction_change"]
+                for k, v in zip(keys, nums):
+                    obj[k] = v
+                result["objects"].append(obj)
 
         return result
 
