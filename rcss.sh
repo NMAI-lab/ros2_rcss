@@ -2,9 +2,20 @@
 
 ROS_VERSION=${2:-humble}
 
+PLATFORM=$(uname -m)
+case "$PLATFORM" in
+    arm64|aarch64) ARCH="linux/arm64" ;;
+    x86_64)        ARCH="linux/amd64" ;;
+    *)             ARCH="linux/amd64" ;;
+esac
+
 compile() {
     echo "Compiling rcss..."
-    docker build --build-arg ROS_DISTRO=${ROS_VERSION} -t rcss .
+    docker build \
+        --platform $ARCH \
+        --build-arg ROS_DISTRO=${ROS_VERSION} \
+        --build-arg ARCH=$ARCH \
+        -t rcss .
 }
 
 run() {
@@ -27,9 +38,10 @@ run() {
                 --env XAUTHORITY=/tmp/.Xauthority \
                 --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
                 --volume $HOME/.Xauthority:/tmp/.Xauthority:rw \
+                --platform $ARCH \
+                -p 9090:9090 \
                 rcss
             ;;
-
         Linux)
             echo "[INFO] Detected Linux"
 
@@ -40,25 +52,13 @@ run() {
                 --env QT_X11_NO_MITSHM=1 \
                 --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
                 --volume $HOME/.Xauthority:/root/.Xauthority:rw \
+                --platform $ARCH \
+                -p 9090:9090 \
                 rcss
             ;;
-
-        MINGW*|MSYS*|CYGWIN*)
-            echo "[INFO] Detected Windows (WSL-style)"
-
-            docker run --name rcss -it \
-                --env DISPLAY=$DISPLAY \
-                --env QT_X11_NO_MITSHM=1 \
-                rcss
-            ;;
-
         *)
-            echo "[WARN] Unknown OS: $OS — using minimal config"
-
-            docker run --name rcss -it \
-                --env DISPLAY=$DISPLAY \
-                rcss
-            ;;
+            echo "[WARN] Unsupported OS: $OS. Running without GUI support."
+            docker run --name rcss -it -p 9090:9090 rcss
     esac
 }
 

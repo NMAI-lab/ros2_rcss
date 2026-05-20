@@ -1,54 +1,35 @@
-FROM ubuntu:22.04
+ARG ROS_DISTRO=humble 
+ARG ARCH=linux/amd64
+
+FROM --platform=${ARCH} ros:${ROS_DISTRO}-ros-base
 
 ARG ROS_DISTRO=humble
 
-ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=${ROS_DISTRO}
+ENV DEBIAN_FRONTEND=noninteractive
 
 SHELL ["/bin/bash", "-c"]
 
-# Basic dependencies
+# Install additional packages
 RUN apt update && apt install -y \
-    locales \
-    curl \
-    gnupg2 \
-    lsb-release \
-    software-properties-common \
-    git \
-    wget \
-    build-essential \
-    cmake \
-    python3-pip \
-    x11-apps \
-    libgl1-mesa-glx \
-    libglu1-mesa \
-    freeglut3-dev \
+    python3-rosdep \
     bison \
     flex \
+    netcat \
+    libboost-all-dev \
+    qtbase5-dev \
+    qt5-qmake \
+    libqt5widgets5 \
+    libqt5opengl5-dev \
+    ros-$ROS_DISTRO-rosbridge-server \
     && rm -rf /var/lib/apt/lists/*
 
-# Locale
-RUN locale-gen en_US en_US.UTF-8
-
-ENV LANG=en_US.UTF-8
-ENV LC_ALL=en_US.UTF-8
-
-# Add ROS 2 GPG key and repo
-RUN curl -sSL http://repo.ros2.org/repos.key | apt-key add - && \
-    add-apt-repository universe && \
-    echo "deb http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/ros2-latest.list
-
-# Install ROS 2 + tools
-RUN apt update && apt install -y \
-    ros-$ROS_DISTRO-desktop \
-    python3-colcon-common-extensions \
-    python3-vcstool \
-    python3-rosdep \
-    && rm -rf /var/lib/apt/lists/*
-
-# rosdep
+# Start rosdep and update
 RUN rosdep init || true
 RUN rosdep update
+
+# Expose ROS bridge port (default 9090)
+EXPOSE 9090
 
 # Create workspace
 RUN mkdir -p /root/rcss_ws/src/rcss
@@ -56,42 +37,35 @@ WORKDIR /root/rcss_ws/src
 
 # Clone RCSS dependencies
 COPY dependencies.repos /root/rcss_ws/src/rcss/dependencies.repos
-
 RUN vcs import /root/rcss_ws/src/ < /root/rcss_ws/src/rcss/dependencies.repos
 
-# Build rcssserver
-WORKDIR /root/rcss_ws/src/rcsoccersim/rcssserver
+# Install ROS 2 dependencies
+WORKDIR /root/rcss_ws
+RUN source /opt/ros/$ROS_DISTRO/setup.bash && \
+    rosdep install --from-paths src -yi
 
-RUN mkdir build && cd build && \
-    cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local && \
-    make -j$(nproc) && \
-    make install
+WORKDIR /root/rcss_ws
 
-# Build rcssmonitor
-WORKDIR /root/rcss_ws/src/rcsoccersim/rcssmonitor
-
-RUN mkdir build && cd build && \
-    cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local && \
-    make -j$(nproc) && \
-    make install
-
-# Ensure binaries exist
-RUN which rcssserver && which rcssmonitor
+# Build the RCSS core packages
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    colcon build --symlink-install
 
 # Copy the package
 COPY ros2_rcss/ /root/rcss_ws/src/rcss/ros2_rcss
 COPY ros2_rcss_msgs/ /root/rcss_ws/src/rcss/ros2_rcss_msgs
 
-# Build ROS workspace
-WORKDIR /root/rcss_ws
-
+# Build RCSS ROS wrapper pakages
 RUN source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    colcon build --symlink-install
+    colcon build --symlink-install --packages-select ros2_rcss ros2_rcss_msgs
 
 # Environment setup
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc
 RUN echo "source /root/rcss_ws/install/local_setup.bash" >> /root/.bashrc
 
+# Start the container
+COPY load_container.sh /root/load_container.sh
+RUN chmod +x /root/load_container.sh
+ENTRYPOINT ["/bin/bash", "/root/load_container.sh"]
 
 # Default shell
 CMD ["bash"]

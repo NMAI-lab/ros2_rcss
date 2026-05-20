@@ -1,6 +1,9 @@
 import rclpy
 from rclpy.node import Node
 
+from collections import deque
+from threading import Lock
+
 from ros2_rcss_msgs.msg import (
     SeePercept,
     SeenObject,
@@ -33,6 +36,8 @@ INITIAL_POSITIONS = {
     '11': (0, 10),     # forward
 }
 
+QUEUE_SIZE = 5
+
 class RCSSClientNode(Node):
 
     def __init__(self):
@@ -42,6 +47,9 @@ class RCSSClientNode(Node):
         self.client = UDPClient()
         self.parser = Parser()
         
+        self._action_queue = deque()
+        self._queue_lock = Lock()
+
         # Declare the parameters
         self.declare_parameter('team_name')
         self.declare_parameter('rcss_client_params')
@@ -114,6 +122,20 @@ class RCSSClientNode(Node):
             self.poll_server
         )
 
+    def _enqueue(self, cmd: str):
+        with self._queue_lock:
+            if len(self._action_queue) >= QUEUE_SIZE:
+                self.get_logger().warn("Action queue full, dropping oldest command")
+                self._action_queue.popleft()
+            self._action_queue.append(cmd)
+
+    def _flush_queue(self):
+        with self._queue_lock:
+            if self._action_queue:
+                cmd = self._action_queue.popleft()
+                self.get_logger().debug(f"Sending: {cmd}")
+                self.client.send(cmd)
+
     def init_player(self):
         player_desc = f"(init {self.team_name}"
         if self.is_goalie:
@@ -136,199 +158,102 @@ class RCSSClientNode(Node):
     
     def poll_server(self):
 
-        raw_msg = self.client.recv()
+        while True:
+            raw_msg = self.client.recv()
 
-        if raw_msg is None:
-            return
+            # No more messages to process
+            if raw_msg is None:
+                break
 
-        # Handle before_kick_off positioning
-        if 'before_kick_off' in raw_msg:
-            self.move_player_to_position()
-            return
-        elif 'kick_off' in raw_msg:
-            if not self._positioned:
-                if self.side == 'l':
-                    self.client.send('(turn 0)')
-                else:
-                    self.client.send('(turn 180)')
-                self._positioned = True
+            # Handle before_kick_off positioning
+            if 'before_kick_off' in raw_msg and not self._positioned:
+                self.move_player_to_position()
                 return
-            
-        percept = self.parser.parse_message(raw_msg)
+            elif 'kick_off' in raw_msg and self._positioned:
+                self._positioned = False
+                
+            # Update perceptions
+            percept = self.parser.parse_message(raw_msg)
 
-        if percept is None:
-            return
+            if percept is None:
+                return
+            elif percept['type'] == 'see':
+                ros_msg = SeePercept()
+                ros_msg.cycle = percept['cycle']
+                for obj in percept['objects']:
+                    seen_obj = SeenObject()
+                    seen_obj.object_type = obj['object_type']
+                    seen_obj.distance = obj.get('distance', 0.0)
+                    seen_obj.direction = obj.get('direction', 0.0)
+                    seen_obj.distance_change = obj.get('distance_change', 0.0)
+                    seen_obj.direction_change = obj.get('direction_change', 0.0)
+                    ros_msg.objects.append(seen_obj)
+                for player in percept['players']:
+                    seen_player = SeenPlayer()
+                    seen_player.team_name = player.get('team_name') or ''
+                    seen_player.uniform_number = player.get('uniform_number') or -1
+                    seen_player.goalie = player.get('goalie', False)
+                    seen_player.distance = player.get('distance', 0.0)
+                    seen_player.direction = player.get('direction', 0.0)
+                    seen_player.distance_change = player.get('distance_change', 0.0)
+                    seen_player.direction_change = player.get('direction_change', 0.0)
+                    seen_player.body_direction = player.get('body_direction', 0.0)
+                    seen_player.head_direction = player.get('head_direction', 0.0)
+                    ros_msg.players.append(seen_player)
+                self.see_pub.publish(ros_msg)
+            elif percept['type'] == 'hear':
+                ros_msg = HearPercept()
+                ros_msg.cycle = percept['cycle']
+                ros_msg.sender = percept.get('sender', '')
+                ros_msg.direction = percept.get('direction', 0.0)
+                ros_msg.message = percept.get('message', '')
+                self.hear_pub.publish(ros_msg)
+            elif percept['type'] == 'body':
+                ros_msg = BodyPercept()
+                ros_msg.cycle = percept['cycle']
+                ros_msg.stamina = percept.get('stamina', 0.0)
+                ros_msg.effort = percept.get('effort', 0.0)
+                ros_msg.speed = percept.get('speed', 0.0)
+                ros_msg.speed_direction = percept.get('speed_direction', 0.0)
+                ros_msg.neck_direction = percept.get('neck_direction', 0.0)
+                ros_msg.view_mode = percept.get('view_mode', '')
+                self.body_pub.publish(ros_msg)
 
-        if percept['type'] == 'see':
-
-            ros_msg = SeePercept()
-            ros_msg.cycle = percept['cycle']
-
-            for obj in percept['objects']:
-
-                seen_obj = SeenObject()
-
-                seen_obj.object_type = obj['object_type']
-
-                seen_obj.distance = obj.get('distance', 0.0)
-                seen_obj.direction = obj.get('direction', 0.0)
-
-                seen_obj.distance_change = obj.get(
-                    'distance_change',
-                    0.0
-                )
-
-                seen_obj.direction_change = obj.get(
-                    'direction_change',
-                    0.0
-                )
-
-                ros_msg.objects.append(seen_obj)
-
-            for player in percept['players']:
-
-                seen_player = SeenPlayer()
-
-                seen_player.team_name = player.get('team_name') or ''
-
-                seen_player.uniform_number = player.get('uniform_number') or -1
-
-                seen_player.goalie = player.get(
-                    'goalie',
-                    False
-                )
-
-                seen_player.distance = player.get(
-                    'distance',
-                    0.0
-                )
-
-                seen_player.direction = player.get(
-                    'direction',
-                    0.0
-                )
-
-                seen_player.distance_change = player.get(
-                    'distance_change',
-                    0.0
-                )
-
-                seen_player.direction_change = player.get(
-                    'direction_change',
-                    0.0
-                )
-
-                seen_player.body_direction = player.get(
-                    'body_direction',
-                    0.0
-                )
-
-                seen_player.head_direction = player.get(
-                    'head_direction',
-                    0.0
-                )
-
-                ros_msg.players.append(seen_player)
-
-            self.see_pub.publish(ros_msg)
-
-        elif percept['type'] == 'hear':
-
-            ros_msg = HearPercept()
-            ros_msg.cycle = percept['cycle']
-
-            ros_msg.sender = percept.get(
-                'sender',
-                ''
-            )
-
-            ros_msg.direction = percept.get(
-                'direction',
-                0.0
-            )
-
-            ros_msg.message = percept.get(
-                'message',
-                ""
-            )
-
-            self.hear_pub.publish(ros_msg)
-
-        elif percept['type'] == 'body':
-
-            ros_msg = BodyPercept()
-            ros_msg.cycle = percept['cycle']
-
-            ros_msg.stamina = percept.get(
-                'stamina',
-                0.0
-            )
-
-            ros_msg.effort = percept.get(
-                'effort',
-                0.0
-            )
-
-            ros_msg.speed = percept.get(
-                'speed',
-                0.0
-            )
-
-            ros_msg.speed_direction = percept.get(
-                'speed_direction',
-                0.0
-            )
-
-            ros_msg.neck_direction = percept.get(
-                'neck_direction',
-                0.0
-            )
-
-            ros_msg.view_mode = percept.get(
-                'view_mode',
-                ""
-            )
-
-            self.body_pub.publish(ros_msg)
+        # Send the most recent action
+        self._flush_queue()
 
     # ACTION CALLBACKS
 
     def dash_callback(self, msg: DashCommand):
-
         cmd = f'(dash {msg.power} {msg.direction})'
-
-        self.client.send(cmd)
+        self._enqueue(cmd)
 
     def turn_callback(self, msg: TurnCommand):
-
         cmd = f'(turn {msg.moment})'
-
-        self.client.send(cmd)
+        self._enqueue(cmd)
 
     def kick_callback(self, msg: KickCommand):
-
         cmd = f'(kick {msg.power} {msg.direction})'
-
-        self.client.send(cmd)
+        self._enqueue(cmd)
 
     def say_callback(self, msg: SayCommand):
-
         cmd = f'(say "{msg.message}")'
-
-        self.client.send(cmd)
+        self._enqueue(cmd)
 
     def catch_callback(self, msg: CatchCommand):
-
         cmd = f'(catch {msg.direction})'
-
-        self.client.send(cmd)
+        self._enqueue(cmd)
 
     # HELPERS
 
     def move_player_to_position(self):
-        self._positioned = False
         x, y = INITIAL_POSITIONS.get(self.number, (-10, 0))
-        self.client.send(f'(move {x} {y})')
+        self._enqueue(f'(move {x} {y})')
+        if self.side == 'l':
+            self._enqueue('(turn 0)')
+        else:
+            self._enqueue('(turn 180)')
+        self._positioned = True
         
 def main(args=None):
 

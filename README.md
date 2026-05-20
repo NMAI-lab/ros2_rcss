@@ -66,11 +66,11 @@ $ ros2 topic echo /[team]/player[number]/hear
 
 - You can publish to the action topics as follows:
 ```sh
-$ ros2 topic pub /[team]/player[number]/cmd/dash "{power: [value], direction: [value]}"
-$ ros2 topic pub /[team]/player[number]/cmd/turn "{moment: [value]}"
-$ ros2 topic pub /[team]/player[number]/cmd/say "{message: [value]}"
-$ ros2 topic pub /[team]/player[number]/cmd/kick "{power: [value], direction: [value]}"
-$ ros2 topic pub /[team]/player[number]/cmd/catch "{direction: [value]}"
+$ ros2 topic pub -t 1 /[team]/player[number]/cmd/dash ros2_rcss_msgs/msg/DashCommand "{power: [value], direction: [value]}"
+$ ros2 topic pub -t 1 /[team]/player[number]/cmd/turn ros2_rcss_msgs/msg/TurnCommand "{moment: [value]}"
+$ ros2 topic pub -t 1 /[team]/player[number]/cmd/say ros2_rcss_msgs/msg/SayCommand "{message: [value]}"
+$ ros2 topic pub -t 1 /[team]/player[number]/cmd/kick ros2_rcss_msgs/msg/KickCommand "{power: [value], direction: [value]}"
+$ ros2 topic pub -t 1 /[team]/player[number]/cmd/catch ros2_rcss_msgs/msg/CatchCommand "{direction: [value]}"
 ```
 
 
