@@ -3,9 +3,11 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import OpaqueFunction, DeclareLaunchArgument, ExecuteProcess
 from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, EnvironmentVariable
 
 import os
+
+KRISLET_OPTIONS = {'none', 'team1', 'team2', 'both'}
 
 def launch_setup(context, *args, **kwargs):
     # Environment config files.
@@ -20,6 +22,21 @@ def launch_setup(context, *args, **kwargs):
     team1_name = LaunchConfiguration('team1').perform(context)
     team2_name = LaunchConfiguration('team2').perform(context)
     make_goalie = LaunchConfiguration('make_goalie').perform(context)
+    krislet = LaunchConfiguration('krislet').perform(context).strip().lower()
+    krislet_period = float(LaunchConfiguration('krislet_period').perform(context))
+
+    if krislet not in KRISLET_OPTIONS:
+        raise ValueError(
+            f"Invalid krislet:='{krislet}'. Expected one of {sorted(KRISLET_OPTIONS)}."
+        )
+    if krislet_period <= 0.0:
+        raise ValueError('krislet_period must be > 0')
+
+    krislet_teams = []
+    if krislet in ('team1', 'both'):
+        krislet_teams.append(team1_name)
+    if krislet in ('team2', 'both'):
+        krislet_teams.append(team2_name)
 
     nodes = [
         ExecuteProcess(
@@ -68,6 +85,19 @@ def launch_setup(context, *args, **kwargs):
             )
         )
 
+        # Krislet agents drive the players of the selected team(s)
+        for team_name in krislet_teams:
+            nodes.append(
+                Node(
+                    package='ros2_rcss',
+                    executable='krislet',
+                    name='krislet',
+                    namespace=f'/{team_name}/player{i+1}',
+                    parameters=[{'decision_period': krislet_period}],
+                    output='screen'
+                )
+            )
+
     return nodes
 
 def generate_launch_description():
@@ -80,6 +110,12 @@ def generate_launch_description():
                               description='The second team name.'),
         DeclareLaunchArgument('make_goalie', default_value='false',
                               description='Make Player 1 Goalie.'),
+        DeclareLaunchArgument('krislet',
+                              default_value=EnvironmentVariable('KRISLET', default_value='none'),
+                              description='Which team(s) Krislet controls: none, team1, team2 or both.'),
+        DeclareLaunchArgument('krislet_period',
+                              default_value=EnvironmentVariable('KRISLET_PERIOD', default_value='0.2'),
+                              description='Seconds between Krislet decisions (larger = slower).'),
     ]
 
     return LaunchDescription(ARGUMENTS + [OpaqueFunction(function=launch_setup)]) 

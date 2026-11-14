@@ -1,9 +1,13 @@
+import time
+
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 
 from collections import deque
 from threading import Lock
 
+from std_msgs.msg import String
 from ros2_rcss_msgs.msg import (
     SeePercept,
     SeenObject,
@@ -22,6 +26,8 @@ from ros2_rcss.tools.udp_client import UDPClient
 from ros2_rcss.tools.parser import Parser
 from ros2_rcss.tools.yaml_parser import load_yaml
 
+# Team-relative positions: the server mirrors them for the right side, so
+# negative x is always our own half.
 INITIAL_POSITIONS = {
     '1':  (-50, 0),    # goalie
     '2':  (-30, -20),  # defender
@@ -37,6 +43,15 @@ INITIAL_POSITIONS = {
 }
 
 QUEUE_SIZE = 5
+INIT_RETRY_PERIOD = 1.0   # seconds between (init ...) attempts
+INIT_POLL_PERIOD = 0.01   # seconds between socket reads while waiting for (init ...)
+DEFAULT_POSITION = (-10, 0)
+
+
+def move_allowed(play_mode: str) -> bool:
+    """Play modes in which the server accepts the (move x y) command."""
+    return play_mode == 'before_kick_off' or play_mode.startswith('goal_')
+
 
 class RCSSClientNode(Node):
 
@@ -46,14 +61,22 @@ class RCSSClientNode(Node):
 
         self.client = UDPClient()
         self.parser = Parser()
-        
+
         self._action_queue = deque()
         self._queue_lock = Lock()
+        self._pending_move = None  # sent before any queued action
+        # The server executes at most one action per cycle. 
+        # A new cycle starts with every sense_body, so one command may be sent per sense_body.
+        self._can_send = True
+
+        self.side = None
+        self.number = None
+        self.play_mode = None
 
         # Declare the parameters
-        self.declare_parameter('team_name')
-        self.declare_parameter('rcss_client_params')
-        self.declare_parameter('is_goalie')
+        self.declare_parameter('team_name', 'A')
+        self.declare_parameter('rcss_client_params', '')
+        self.declare_parameter('is_goalie', False)
 
         # Get the value from parameter server
         self.rcss_client_params = load_yaml(self.get_parameter('rcss_client_params').get_parameter_value().string_value)
@@ -78,6 +101,17 @@ class RCSSClientNode(Node):
             BodyPercept,
             'body',
             self.rcss_client_params['queue_size']
+        )
+
+        # Latched so late subscribers (e.g. agents) still get the side ('l' or 'r')
+        self.side_pub = self.create_publisher(
+            String,
+            'side',
+            QoSProfile(
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=ReliabilityPolicy.RELIABLE,
+            )
         )
 
         # Action command subscribers
@@ -128,34 +162,56 @@ class RCSSClientNode(Node):
                 self.get_logger().warn("Action queue full, dropping oldest command")
                 self._action_queue.popleft()
             self._action_queue.append(cmd)
+        self._send_next()
 
-    def _flush_queue(self):
+    def _send_next(self):
+        """Send the next command right away if this cycle's slot is still free."""
         with self._queue_lock:
-            if self._action_queue:
+            if not self._can_send:
+                return
+            if self._pending_move is not None:
+                cmd, self._pending_move = self._pending_move, None
+            elif self._action_queue:
                 cmd = self._action_queue.popleft()
-                self.get_logger().debug(f"Sending: {cmd}")
-                self.client.send(cmd)
+            else:
+                return
+            self._can_send = False
+        self.get_logger().debug(f"Sending: {cmd}")
+        self.client.send(cmd)
 
     def init_player(self):
         player_desc = f"(init {self.team_name}"
         if self.is_goalie:
             player_desc += " goalie"
-        self.client.send(f"{player_desc} (version 15))")
-        self._positioned = False
+        player_desc += " (version 15))"
 
-        while True:
+        # The server may not be listening yet, so retry until it answers
+        last_sent = 0.0
+        while rclpy.ok():
+            if time.monotonic() - last_sent >= INIT_RETRY_PERIOD:
+                self.client.send(player_desc)
+                last_sent = time.monotonic()
+
             msg = self.client.recv()
-            self.get_logger().info(f"[init] received: {msg}")
-            if msg and "before_kick_off" in msg:
-                parts = msg.split()
-                self.side = parts[1]    # 'l' or 'r'
-                self.number = parts[2]  # uniform number
-                break
+            if msg is None:
+                time.sleep(INIT_POLL_PERIOD)
+                continue
 
-        self.move_player_to_position()
+            self.get_logger().info(f"[init] received: {msg}")
+            if msg.startswith("(init "):
+                parts = msg.strip("()").split()
+                self.side = parts[1]          # 'l' or 'r'
+                self.number = parts[2]        # uniform number
+                play_mode = parts[3] if len(parts) > 3 else ''
+                break
+            if msg.startswith("(error"):
+                raise RuntimeError(f"Server rejected {player_desc}: {msg}")
+
+        self.side_pub.publish(String(data=self.side))
+        self.on_play_mode(play_mode)
 
     # PERCEPTIONS
-    
+
     def poll_server(self):
 
         while True:
@@ -165,24 +221,21 @@ class RCSSClientNode(Node):
             if raw_msg is None:
                 break
 
-            # Handle before_kick_off positioning
-            if 'before_kick_off' in raw_msg and not self._positioned:
-                self.move_player_to_position()
-                return
-            elif 'kick_off' in raw_msg and self._positioned:
-                self._positioned = False
-                
-            # Update perceptions
             percept = self.parser.parse_message(raw_msg)
 
+            # server_param, player_type, ok, error, ...
             if percept is None:
-                return
-            elif percept['type'] == 'see':
+                if raw_msg.startswith("(error"):
+                    self.get_logger().warn(f"Server error: {raw_msg}")
+                continue
+
+            if percept['type'] == 'see':
                 ros_msg = SeePercept()
                 ros_msg.cycle = percept['cycle']
                 for obj in percept['objects']:
                     seen_obj = SeenObject()
                     seen_obj.object_type = obj['object_type']
+                    seen_obj.name = obj.get('name', obj['object_type'])
                     seen_obj.distance = obj.get('distance', 0.0)
                     seen_obj.direction = obj.get('direction', 0.0)
                     seen_obj.distance_change = obj.get('distance_change', 0.0)
@@ -202,6 +255,8 @@ class RCSSClientNode(Node):
                     ros_msg.players.append(seen_player)
                 self.see_pub.publish(ros_msg)
             elif percept['type'] == 'hear':
+                if percept['sender'] == 'referee':
+                    self.on_play_mode(percept['message'])
                 ros_msg = HearPercept()
                 ros_msg.cycle = percept['cycle']
                 ros_msg.sender = percept.get('sender', '')
@@ -209,6 +264,8 @@ class RCSSClientNode(Node):
                 ros_msg.message = percept.get('message', '')
                 self.hear_pub.publish(ros_msg)
             elif percept['type'] == 'body':
+                with self._queue_lock:
+                    self._can_send = True
                 ros_msg = BodyPercept()
                 ros_msg.cycle = percept['cycle']
                 ros_msg.stamina = percept.get('stamina', 0.0)
@@ -219,8 +276,16 @@ class RCSSClientNode(Node):
                 ros_msg.view_mode = percept.get('view_mode', '')
                 self.body_pub.publish(ros_msg)
 
-        # Send the most recent action
-        self._flush_queue()
+        # A new cycle may have started: send the next queued action
+        self._send_next()
+
+    def on_play_mode(self, play_mode: str):
+        """Track the referee's play mode and go to the formation position whenever moving is allowed."""
+        if play_mode == self.play_mode:
+            return
+        self.play_mode = play_mode
+        if move_allowed(play_mode):
+            self.move_player_to_position()
 
     # ACTION CALLBACKS
 
@@ -247,23 +312,30 @@ class RCSSClientNode(Node):
     # HELPERS
 
     def move_player_to_position(self):
-        x, y = INITIAL_POSITIONS.get(self.number, (-10, 0))
-        self._enqueue(f'(move {x} {y})')
-        if self.side == 'l':
-            self._enqueue('(turn 0)')
-        else:
-            self._enqueue('(turn 180)')
-        self._positioned = True
-        
+        # The server already spawns both sides facing the opponent goal, so no turn is needed
+        x, y = INITIAL_POSITIONS.get(self.number, DEFAULT_POSITION)
+        with self._queue_lock:
+            self._pending_move = f'(move {x} {y})'
+        self._send_next()
+
+    def disconnect(self):
+        try:
+            self.client.send('(bye)')
+        except OSError:
+            pass
+
+
 def main(args=None):
 
     rclpy.init(args=args)
 
     node = RCSSClientNode()
-    node.init_player()
-    
-    rclpy.spin(node)
-
-    node.destroy_node()
-
-    rclpy.shutdown()
+    try:
+        node.init_player()
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.disconnect()
+        node.destroy_node()
+        rclpy.try_shutdown()

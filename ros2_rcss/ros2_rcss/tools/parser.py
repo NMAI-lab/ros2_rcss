@@ -1,6 +1,18 @@
 import re
 
 
+OBJECT_PREFIXES = {"b": "ball", "g": "goal", "f": "flag", "l": "line"}
+
+
+def object_name(raw: str) -> str:
+    """Convert a raw object token like '(g r)' or '(f c t)' to 'goal r' / 'flag c t'."""
+    tokens = raw.strip("()").split()
+    if not tokens:
+        return ""
+    tokens[0] = OBJECT_PREFIXES.get(tokens[0], tokens[0])
+    return " ".join(tokens)
+
+
 class Parser:
     def parse_message(self, msg: str):
         if msg.startswith("(see"):
@@ -40,7 +52,7 @@ class Parser:
                     pass
 
             if obj_name_raw == "(b)":
-                obj = {"object_type": "ball"}
+                obj = {"object_type": "ball", "name": "ball"}
                 keys = ["distance", "direction", "distance_change", "direction_change"]
                 for k, v in zip(keys, nums):
                     obj[k] = v
@@ -65,14 +77,16 @@ class Parser:
                 result["players"].append(player)
 
             elif obj_name_raw.startswith("(g"):
-                obj = {"object_type": "goal", "which": obj_name_raw}
+                obj = {"object_type": "goal", "which": obj_name_raw,
+                       "name": object_name(obj_name_raw)}
                 keys = ["distance", "direction", "distance_change", "direction_change"]
                 for k, v in zip(keys, nums):
                     obj[k] = v
                 result["objects"].append(obj)
 
             elif obj_name_raw.startswith("(f") or obj_name_raw.startswith("(l"):
-                obj = {"object_type": "flag", "which": obj_name_raw}
+                obj = {"object_type": "flag", "which": obj_name_raw,
+                       "name": object_name(obj_name_raw)}
                 keys = ["distance", "direction", "distance_change", "direction_change"]
                 for k, v in zip(keys, nums):
                     obj[k] = v
@@ -89,19 +103,31 @@ class Parser:
             "message": ""
         }
 
-        pattern = re.compile(
-            r"\(hear\s+(\d+)\s+([^\s]+)\s+(.+)\)"
+        # Formats (protocol v15):
+        #   (hear T referee play_mode)      (hear T self "msg")
+        #   (hear T DIR our UNUM "msg")     (hear T DIR opp "msg")
+        #   (hear T online_coach_left "msg")
+        match = re.match(r"\(hear\s+(\d+)\s+(.*)\)$", msg, re.S)
+        if not match:
+            return result
+
+        result["cycle"] = int(match.group(1))
+        rest = match.group(2).strip()
+
+        player = re.match(
+            r'(-?[\d.]+)\s+(?:(our)\s+(\d+)|(opp))\s*(.*)$', rest, re.S
         )
-
-        match = pattern.match(msg)
-
-        if match:
-
-            result["cycle"] = int(match.group(1))
-
-            result["sender"] = match.group(2)
-
-            result["message"] = match.group(3)
+        if player:
+            result["direction"] = float(player.group(1))
+            if player.group(2):
+                result["sender"] = f"our {player.group(3)}"
+            else:
+                result["sender"] = "opp"
+            result["message"] = player.group(5).strip().strip('"')
+        else:
+            sender, _, message = rest.partition(" ")
+            result["sender"] = sender
+            result["message"] = message.strip().strip('"')
 
         return result
 
@@ -132,7 +158,7 @@ class Parser:
             )
 
         stamina_match = re.search(
-            r"\(stamina\s+([-\d\.]+)\s+([-\d\.]+)\)",
+            r"\(stamina\s+([-\d\.]+)\s+([-\d\.]+)",
             msg
         )
 
@@ -162,7 +188,7 @@ class Parser:
             )
 
         neck_match = re.search(
-            r"\(neck\s+([-\d\.]+)\)",
+            r"\((?:head_angle|neck)\s+([-\d\.]+)\)",
             msg
         )
 
@@ -171,5 +197,10 @@ class Parser:
             result["neck_direction"] = float(
                 neck_match.group(1)
             )
+
+        view_match = re.search(r"\(view_mode\s+(\w+)\s+(\w+)\)", msg)
+
+        if view_match:
+            result["view_mode"] = f"{view_match.group(1)} {view_match.group(2)}"
 
         return result

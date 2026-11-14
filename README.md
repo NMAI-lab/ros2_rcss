@@ -31,7 +31,7 @@ rcss
 
 2. Launch the simulator inside the container
 ```sh
-ros2 launch ros2_rcss rcss.launch.py [num_players:=] [team1:=] [team2:=]
+ros2 launch ros2_rcss rcss.launch.py [num_players:=] [team1:=] [team2:=] [make_goalie:=] [krislet:=] [krislet_period:=]
 ```
 
 3. Verify that everything is working by doing
@@ -73,6 +73,36 @@ $ ros2 topic pub -t 1 /[team]/player[number]/cmd/kick ros2_rcss_msgs/msg/KickCom
 $ ros2 topic pub -t 1 /[team]/player[number]/cmd/catch ros2_rcss_msgs/msg/CatchCommand "{direction: [value]}"
 ```
 
+- Each `see` object has an `object_type` (`ball`, `goal`, `flag`) and a full `name` (e.g. `ball`, `goal r`, `flag c t`).
+- Each player publishes its field side (`l` or `r`) on the latched topic `/[team]/player[number]/side`.
+
+## Krislet baseline agent
+
+A ROS2 port of the classic rule-based Krislet (Krzysztof Langner) strategy is included as a non-LLM baseline. It uses the same `see`/`hear`/`side` topics and `cmd/*` topics as any other agent:
+
+1. Ball not visible → turn 40° and wait for new visual info.
+2. Ball farther than 1.0 → turn to it, or dash at it if already facing it.
+3. Ball kickable but opponent goal not visible → turn 40° and wait.
+4. Otherwise → kick at full power towards the opponent goal.
+
+Choose which team(s) Krislet controls and how often it decides (seconds between decisions; larger = slower):
+```sh
+# From the docker script: starts the match in this terminal (Ctrl-C stops it and the container)
+$ ./rcss.sh --run --krislet both --krislet-period 0.5     # none | team1 | team2 | both
+$ ./rcss.sh --run --krislet team1 num_players:=3          # extra name:=value args go to the launch file
+$ ./rcss.sh --run                                         # starts the match without Krislet
+$ ./rcss.sh --run --krislet both --no-launch              # only open a shell; launch manually
+
+# Or directly at launch time (overrides the docker script values)
+$ ros2 launch ros2_rcss rcss.launch.py num_players:=3 krislet:=team1 krislet_period:=1.0
+
+# Or change the speed of a running Krislet on the fly
+$ ros2 param set /A/player1/krislet decision_period 2.0
+```
+
+The default period is `0.2s`, matching the original Krislet (two simulator steps). Krislet clears its view after
+every action and only acts again on a newer `see` percept. `rcss_client` sends at most one command per server
+cycle (0.1s), so periods below that only fill the queue.
 
 ## Acknowledgements
 - [rcssserver](https://github.com/rcsoccersim/rcssserver)

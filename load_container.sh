@@ -14,5 +14,5 @@ echo "Waiting for rosbridge..."
 until nc -z localhost 9090; do sleep 1; done
 echo "Rosbridge is up"
 
-# Keep container interactive
-exec bash
+# Run the requested command (defaults to an interactive bash shell via CMD)
+exec "$@"
