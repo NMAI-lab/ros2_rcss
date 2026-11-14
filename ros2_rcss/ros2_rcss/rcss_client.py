@@ -47,6 +47,11 @@ INIT_RETRY_PERIOD = 1.0   # seconds between (init ...) attempts
 INIT_POLL_PERIOD = 0.01   # seconds between socket reads while waiting for (init ...)
 DEFAULT_POSITION = (-10, 0)
 
+# Facing the kick-off spot after repositioning
+CENTER_FLAG = 'flag c'      # centre of the field, where the ball is placed for kick-off
+ALIGN_TOLERANCE = 1.0       # degrees; aligned once the target is this close to straight ahead
+ALIGN_SEARCH_TURN = 60.0    # degrees to turn when no target is in view (view cone is 90)
+
 
 def move_allowed(play_mode: str) -> bool:
     """Play modes in which the server accepts the (move x y) command."""
@@ -64,7 +69,13 @@ class RCSSClientNode(Node):
 
         self._action_queue = deque()
         self._queue_lock = Lock()
-        self._pending_move = None  # sent before any queued action
+        # Move / alignment turn owned by the client, sent before any agent action
+        self._priority_cmd = None
+        # sense_bodies (= new cycles) since the last priority command was sent;
+        # a see received after at least one of them reflects that command
+        self._bodies_since_priority = 1
+        # True while the client turns the player to face the kick-off spot
+        self._aligning = False
         # The server executes at most one action per cycle. 
         # A new cycle starts with every sense_body, so one command may be sent per sense_body.
         self._can_send = True
@@ -169,8 +180,11 @@ class RCSSClientNode(Node):
         with self._queue_lock:
             if not self._can_send:
                 return
-            if self._pending_move is not None:
-                cmd, self._pending_move = self._pending_move, None
+            if self._priority_cmd is not None:
+                cmd, self._priority_cmd = self._priority_cmd, None
+                self._bodies_since_priority = 0
+            elif self._aligning:
+                return  # agent actions wait until the player faces the kick-off spot
             elif self._action_queue:
                 cmd = self._action_queue.popleft()
             else:
@@ -254,6 +268,7 @@ class RCSSClientNode(Node):
                     seen_player.head_direction = player.get('head_direction', 0.0)
                     ros_msg.players.append(seen_player)
                 self.see_pub.publish(ros_msg)
+                self.align_to_kickoff(percept)
             elif percept['type'] == 'hear':
                 if percept['sender'] == 'referee':
                     self.on_play_mode(percept['message'])
@@ -266,6 +281,7 @@ class RCSSClientNode(Node):
             elif percept['type'] == 'body':
                 with self._queue_lock:
                     self._can_send = True
+                    self._bodies_since_priority += 1
                 ros_msg = BodyPercept()
                 ros_msg.cycle = percept['cycle']
                 ros_msg.stamina = percept.get('stamina', 0.0)
@@ -286,6 +302,8 @@ class RCSSClientNode(Node):
         self.play_mode = play_mode
         if move_allowed(play_mode):
             self.move_player_to_position()
+        elif self._aligning:
+            self._finish_alignment()
 
     # ACTION CALLBACKS
 
@@ -312,11 +330,53 @@ class RCSSClientNode(Node):
     # HELPERS
 
     def move_player_to_position(self):
-        # The server already spawns both sides facing the opponent goal, so no turn is needed
+        """Move to the formation position, then turn to face the kick-off spot."""
         x, y = INITIAL_POSITIONS.get(self.number, DEFAULT_POSITION)
         with self._queue_lock:
-            self._pending_move = f'(move {x} {y})'
+            self._priority_cmd = f'(move {x} {y})'
+            self._aligning = True
         self._send_next()
+
+    def align_to_kickoff(self, percept):
+        """
+        Turn towards the ball (before kick-off) or the centre flag (after a goal,
+        while the ball is still in the net) until it is straight ahead. Only views
+        taken after the previous move/turn was applied are used.
+        """
+        with self._queue_lock:
+            if (not self._aligning or self._priority_cmd is not None
+                    or self._bodies_since_priority < 1):
+                return
+
+        if self.play_mode == 'before_kick_off':
+            targets = ('ball', CENTER_FLAG)
+        else:
+            targets = (CENTER_FLAG,)
+
+        seen = {obj.get('name'): obj for obj in percept['objects']}
+        target = next((seen[name] for name in targets if name in seen), None)
+
+        if target is None:
+            turn = ALIGN_SEARCH_TURN
+        elif abs(target.get('direction', 0.0)) <= ALIGN_TOLERANCE:
+            self._finish_alignment()
+            return
+        else:
+            turn = target.get('direction', 0.0)
+
+        with self._queue_lock:
+            self._priority_cmd = f'(turn {turn})'
+
+    def _finish_alignment(self):
+        with self._queue_lock:
+            self._aligning = False
+            # Agent actions issued while aligning were based on outdated views
+            dropped = len(self._action_queue)
+            self._action_queue.clear()
+        if dropped:
+            self.get_logger().info(
+                f"Dropped {dropped} agent command(s) issued while facing the kick-off spot"
+            )
 
     def disconnect(self):
         try:

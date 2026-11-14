@@ -75,6 +75,7 @@ $ ros2 topic pub -t 1 /[team]/player[number]/cmd/catch ros2_rcss_msgs/msg/CatchC
 
 - Each `see` object has an `object_type` (`ball`, `goal`, `flag`) and a full `name` (e.g. `ball`, `goal r`, `flag c t`).
 - Each player publishes its field side (`l` or `r`) on the latched topic `/[team]/player[number]/side`.
+- Before kick-off and after every goal, each player is moved to its formation position and turned to face the ball (or the centre spot after a goal). Agent commands sent while this happens are dropped.
 
 ## Krislet baseline agent
 
