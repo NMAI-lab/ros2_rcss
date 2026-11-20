@@ -88,6 +88,10 @@ run() {
         --env "KRISLET_PERIOD=$KRISLET_PERIOD"
     )
 
+    # ROS discovers nodes across containers on the same Docker network: two matches at once share topics
+    # (each player then sees the other match's ball). Set ROS_DOMAIN_ID (0-101) to a different value for each.
+    [ -n "${ROS_DOMAIN_ID:-}" ] && DOCKER_ARGS+=(--env "ROS_DOMAIN_ID=$ROS_DOMAIN_ID")
+
     case "$OS" in
         Darwin)
             echo "[INFO] Detected macOS (XQuartz mode)"

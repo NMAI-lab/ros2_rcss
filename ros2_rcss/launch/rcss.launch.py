@@ -9,6 +9,11 @@ import os
 
 KRISLET_OPTIONS = {'none', 'team1', 'team2', 'both'}
 
+# rcssserver drops the ball (and teleports the players away from it) when nobody has kicked it for this
+# many cycles. Its default of 100 cycles (10 s) is too short for agents that take a few seconds per
+# decision: they never reach the ball. 500 cycles = 50 s. Also used for kick_off_wait.
+DEFAULT_DROP_BALL_TIME = 500
+
 def launch_setup(context, *args, **kwargs):
     # Environment config files.
     pkg_ros2_rcss = get_package_share_directory('ros2_rcss')
@@ -24,6 +29,7 @@ def launch_setup(context, *args, **kwargs):
     make_goalie = LaunchConfiguration('make_goalie').perform(context)
     krislet = LaunchConfiguration('krislet').perform(context).strip().lower()
     krislet_period = float(LaunchConfiguration('krislet_period').perform(context))
+    drop_ball_time = int(LaunchConfiguration('drop_ball_time').perform(context))
 
     if krislet not in KRISLET_OPTIONS:
         raise ValueError(
@@ -40,7 +46,9 @@ def launch_setup(context, *args, **kwargs):
 
     nodes = [
         ExecuteProcess(
-            cmd=['rcssserver'],
+            cmd=['rcssserver',
+                 f'server::drop_ball_time={drop_ball_time}',
+                 f'server::kick_off_wait={drop_ball_time}'],
             output='screen'
         ),
 
@@ -113,6 +121,9 @@ def generate_launch_description():
         DeclareLaunchArgument('krislet',
                               default_value=EnvironmentVariable('KRISLET', default_value='none'),
                               description='Which team(s) Krislet controls: none, team1, team2 or both.'),
+        DeclareLaunchArgument('drop_ball_time', default_value=str(DEFAULT_DROP_BALL_TIME),
+                              description='Cycles before the referee drops an unkicked ball (also sets '
+                                          'kick_off_wait); rcssserver\'s default is 100.'),
         DeclareLaunchArgument('krislet_period',
                               default_value=EnvironmentVariable('KRISLET_PERIOD', default_value='0.2'),
                               description='Seconds between Krislet decisions (larger = slower).'),

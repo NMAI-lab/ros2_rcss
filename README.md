@@ -31,7 +31,7 @@ rcss
 
 2. Launch the simulator inside the container
 ```sh
-ros2 launch ros2_rcss rcss.launch.py [num_players:=] [team1:=] [team2:=] [make_goalie:=] [krislet:=] [krislet_period:=]
+ros2 launch ros2_rcss rcss.launch.py [num_players:=] [team1:=] [team2:=] [make_goalie:=] [krislet:=] [krislet_period:=] [drop_ball_time:=]
 ```
 
 3. Verify that everything is working by doing
@@ -90,6 +90,7 @@ Choose which team(s) Krislet controls and how often it decides (seconds between 
 ```sh
 # From the docker script: starts the match in this terminal (Ctrl-C stops it and the container)
 $ ./rcss.sh --run --krislet both --krislet-period 0.5     # none | team1 | team2 | both
+$ ./rcss.sh --run --krislet team1 drop_ball_time:=100   # rcssserver's own 10 s ball drop (default here: 500 cycles = 50 s)
 $ ./rcss.sh --run --krislet team1 num_players:=3          # extra name:=value args go to the launch file
 $ ./rcss.sh --run                                         # starts the match without Krislet
 $ ./rcss.sh --run --krislet both --no-launch              # only open a shell; launch manually
@@ -108,3 +109,13 @@ cycle (0.1s), so periods below that only fill the queue.
 ## Acknowledgements
 - [rcssserver](https://github.com/rcsoccersim/rcssserver)
 - [rcssmonitor](https://github.com/rcsoccersim/rcssmonitor)
+## Troubleshooting
+
+**Krislet (or an agent) never kicks.**
+* rcssserver drops the ball, and moves the players away from it, every `drop_ball_time` cycles while nobody
+  kicks it (default 100 = 10 s). A player that needs longer than that to reach the ball never does. The launch
+  file sets 500; the image has to be rebuilt to pick that up: `./rcss.sh --compile`.
+* Only one match per ROS domain. Containers on the same Docker network discover each other, so a second
+  `rcss` container (even a forgotten one) feeds its percepts into your players: the ball is "9 m away" while it
+  is at the player's feet. Stop the other container or give each its own `ROS_DOMAIN_ID`:
+  `ROS_DOMAIN_ID=7 ./rcss.sh --run --krislet team2`.
