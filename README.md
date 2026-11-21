@@ -77,6 +77,26 @@ $ ros2 topic pub -t 1 /[team]/player[number]/cmd/catch ros2_rcss_msgs/msg/CatchC
 - Each player publishes its field side (`l` or `r`) on the latched topic `/[team]/player[number]/side`.
 - Before kick-off and after every goal, each player is moved to its formation position and turned to face the ball (or the centre spot after a goal). Agent commands sent while this happens are dropped.
 
+## Starting the match programmatically (coach mode)
+
+rcssserver waits in `before_kick_off` until someone presses *Kick Off* in the monitor; until then every player
+command is dropped. With `coach:=true` (the default) the launch file starts the server with `server::coach=1`
+and `server::coach_w_referee=1` (coach mode alone suspends the server's referee: a ball kicked out of bounds
+stays there and no goal is judged) and starts the **referee node**, the server's one trainer (UDP port 6001):
+
+- service `/referee/kick_off` (`std_srvs/Trigger`) sends `(change_mode play_on)`: the match starts whichever side
+  the players got. `kick_off_on_start:=true` does it as soon as the node is connected, and
+  `kick_off_on_command:=true` when the first command arrives from a team that Krislet does not play, so the
+  clock starts when your agent acts;
+- once started, whenever the referee stops play (ball out, free kick, offside, the kick-off after a goal) the
+  node puts the ball back in the centre and plays on after `resume_delay_s` (1 s).
+
+```sh
+ros2 service call /referee/kick_off std_srvs/srv/Trigger
+```
+
+The server's half time is 3000 cycles (300 s at 10 cycles/s).
+
 ## Krislet baseline agent
 
 A ROS2 port of the classic rule-based Krislet (Krzysztof Langner) strategy is included as a non-LLM baseline. It uses the same `see`/`hear`/`side` topics and `cmd/*` topics as any other agent:

@@ -14,6 +14,13 @@ KRISLET_OPTIONS = {'none', 'team1', 'team2', 'both'}
 # decision: they never reach the ball. 500 cycles = 50 s. Also used for kick_off_wait.
 DEFAULT_DROP_BALL_TIME = 500
 
+# Trainer ("coach") mode lets a client on UDP port 6001 control the match: `(change_mode play_on)` starts it
+# without pressing Kick Off in the monitor, whichever side a player got. Used for unattended runs.
+# MEASURED: with server::coach=1 alone rcssserver SUSPENDS its automatic referee: a ball kicked 35 m past the
+# touch line stayed there in play_on forever, and no goal would be judged. server::coach_w_referee=1 keeps the
+# referee running next to the trainer.
+DEFAULT_COACH = 'true'
+
 def launch_setup(context, *args, **kwargs):
     # Environment config files.
     pkg_ros2_rcss = get_package_share_directory('ros2_rcss')
@@ -30,6 +37,9 @@ def launch_setup(context, *args, **kwargs):
     krislet = LaunchConfiguration('krislet').perform(context).strip().lower()
     krislet_period = float(LaunchConfiguration('krislet_period').perform(context))
     drop_ball_time = int(LaunchConfiguration('drop_ball_time').perform(context))
+    coach = LaunchConfiguration('coach').perform(context).strip().lower() in ('true', '1')
+    kick_off_on_start = LaunchConfiguration('kick_off_on_start').perform(context).strip().lower() in ('true', '1')
+    kick_off_on_command = LaunchConfiguration('kick_off_on_command').perform(context).strip().lower() in ('true', '1')
 
     if krislet not in KRISLET_OPTIONS:
         raise ValueError(
@@ -48,7 +58,9 @@ def launch_setup(context, *args, **kwargs):
         ExecuteProcess(
             cmd=['rcssserver',
                  f'server::drop_ball_time={drop_ball_time}',
-                 f'server::kick_off_wait={drop_ball_time}'],
+                 f'server::kick_off_wait={drop_ball_time}',
+                 f'server::coach={int(coach)}',
+                 f'server::coach_w_referee={int(coach)}'],
             output='screen'
         ),
 
@@ -57,6 +69,14 @@ def launch_setup(context, *args, **kwargs):
             output='screen'
         )
     ]
+
+    if coach:
+        # the teams a program (not Krislet) plays: the match starts at the first command of one of them
+        programmed = [t for t in (team1_name, team2_name) if t not in krislet_teams]
+        nodes.append(Node(package='ros2_rcss', executable='referee', name='referee', output='screen',
+                          parameters=[{'kick_off_on_start': kick_off_on_start or (kick_off_on_command and not programmed),
+                                       'kick_off_on_command_of': programmed if kick_off_on_command else [''],
+                                       'num_players': num_players}]))
 
     for i in range(num_players):
         is_goalie = False
@@ -124,6 +144,16 @@ def generate_launch_description():
         DeclareLaunchArgument('drop_ball_time', default_value=str(DEFAULT_DROP_BALL_TIME),
                               description='Cycles before the referee drops an unkicked ball (also sets '
                                           'kick_off_wait); rcssserver\'s default is 100.'),
+        DeclareLaunchArgument('coach', default_value=DEFAULT_COACH,
+                              description='Run the server in coach mode with its referee kept on, and start the '
+                                          'referee node: it kicks off the match on the /referee/kick_off service and '
+                                          'puts the ball back in the centre whenever the referee stops play.'),
+        DeclareLaunchArgument('kick_off_on_start', default_value='false',
+                              description='Start the match as soon as the referee node is connected (default: '
+                                          'wait for the /referee/kick_off service).'),
+        DeclareLaunchArgument('kick_off_on_command', default_value='false',
+                              description='Start the match when the first command arrives from a team that Krislet '
+                                          'does not play (so the clock starts when your agent acts).'),
         DeclareLaunchArgument('krislet_period',
                               default_value=EnvironmentVariable('KRISLET_PERIOD', default_value='0.2'),
                               description='Seconds between Krislet decisions (larger = slower).'),

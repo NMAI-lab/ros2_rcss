@@ -28,6 +28,7 @@ setup(
         'console_scripts': [
             'rcss_client = ros2_rcss.rcss_client:main',
             'krislet = ros2_rcss.krislet:main',
+            'referee = ros2_rcss.referee:main',
         ],
     },
 )
